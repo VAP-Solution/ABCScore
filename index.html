@@ -16,7 +16,9 @@
         extend: {
           fontFamily: { sans: ['Sarabun', 'system-ui', 'sans-serif'] },
           colors: {
-            gov: '#1e3a5f',
+            gov: '#5d2566',
+            'gov-dark': '#4a1d52',
+            gold: '#d3bd45',
             tier: { red: '#9b2c2c', amber: '#b45309', green: '#2f6b4f' },
           },
         },
@@ -330,10 +332,10 @@
     /* --- Header --- */
     function Header({ onOpenSettings }) {
       return (
-        <header className="bg-gov text-white">
+        <header className="bg-gov-dark text-white border-b-4 border-gold">
           <div className="mx-auto max-w-[1500px] px-5 py-4 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-sm bg-white/10 ring-1 ring-white/20 font-bold text-lg tracking-tight">ABC</div>
+              <div className="grid h-10 w-10 place-items-center rounded-sm bg-gold text-gov-dark ring-1 ring-gold/40 font-bold text-lg tracking-tight">ABC</div>
               <div>
                 <h1 className="text-xl font-bold leading-tight">ABC Score — ระบบจัดลำดับความเสี่ยงการยื่นบัญชีทรัพย์สิน</h1>
                 <p className="text-sm text-white/70 leading-tight">การจัดลำดับความเสี่ยง — สาธิต · Risk triage screening (demo)</p>
@@ -418,7 +420,7 @@
               <span className="text-lg font-bold tabular-nums text-slate-900 w-8 text-right">{r.composite.toFixed(0)}</span>
               <div className="flex-1"><Bar value={r.composite / 100} colorClass={TIER[r.tier].bg} height="h-2.5" /></div>
             </div>
-            {r.partial && <div className="text-[10px] text-slate-400 mt-0.5">คะแนนบางส่วน (รอ {r.pendingPillars.join(",")})</div>}
+            {r.partial && <div className="text-[10px] text-slate-400 mt-0.5">คะแนนจากเสา {r.pendingPillars.length === 2 ? "A" : PILLARS.filter(p => !r.pendingPillars.includes(p)).join("+")} (รอ {r.pendingPillars.join(",")})</div>}
           </td>
           <td className="px-3 py-2.5"><TierChip tier={r.tier} small /></td>
           <td className="px-3 py-2.5 text-center">
