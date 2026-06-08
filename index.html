@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ABC Score — ระบบจัดลำดับความเสี่ยง (สาธิต)</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Sarabun', 'system-ui', 'sans-serif'] },
+          colors: {
+            gov: '#1e3a5f',
+            tier: { red: '#9b2c2c', amber: '#b45309', green: '#2f6b4f' },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    html { font-family: 'Sarabun', system-ui, sans-serif; }
+    body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+    input[type="range"] { height: 6px; border-radius: 9999px; }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    /* =====================================================================
+       ABC Score — SDD v0.2
+       Scoring: §5 formula + §5.2 missing-pillar renormalization
+       UI: full-width table · right slide-over drill-down · left settings drawer
+           · centered intake modal with live preview
+       §9.1 GUARDRAIL: simulated API connect clearly labeled
+       No network · no storage · no ML · all in-memory synthetic data
+       Hand-verified: OFF-0001 → composite ≈ 97.4
+       ===================================================================== */
+
+    const SIGNAL_DEFS = [
+      { key: "asset_income_ratio",        pillar: "A", weightInPillar: 0.30, labelTh: "อัตราส่วนทรัพย์สินต่อรายได้",            labelEn: "Asset-to-income ratio",      unit: "เท่า",   fmt: v => v.toFixed(1),  descTh: "ทรัพย์สินสูงผิดปกติเมื่อเทียบกับรายได้ตลอดอายุราชการ" },
+      { key: "networth_jump",             pillar: "A", weightInPillar: 0.25, labelTh: "การเพิ่มของทรัพย์สินสุทธิที่ไม่อธิบาย",  labelEn: "Unexplained net-worth jump", unit: "%",     fmt: v => Math.round(v), descTh: "ทรัพย์สินสุทธิเพิ่มก้าวกระโดดโดยไม่มีรายได้รองรับ" },
+      { key: "concealable_share",         pillar: "A", weightInPillar: 0.20, labelTh: "สัดส่วนทรัพย์สินที่ปกปิดได้",            labelEn: "Concealable-asset share",    unit: "%",     fmt: v => Math.round(v), descTh: "ถือเงินสด/ทอง/ทรัพย์สินต่างประเทศที่ตรวจสอบยากในสัดส่วนสูง" },
+      { key: "declaration_inconsistency", pillar: "A", weightInPillar: 0.15, labelTh: "ความไม่สอดคล้องของการยื่นบัญชี",        labelEn: "Declaration inconsistency",  unit: "รายการ", fmt: v => Math.round(v), descTh: "ยื่นไม่ครบ ข้อมูลไม่ตรงกัน หรือยื่นล่าช้า" },
+      { key: "position_opportunity",      pillar: "A", weightInPillar: 0.10, labelTh: "โอกาสจากตำแหน่งหน้าที่",               labelEn: "Position opportunity",       unit: "ดัชนี", fmt: v => Math.round(v), descTh: "ตำแหน่งมีอำนาจเหนืองบประมาณ การจัดซื้อ หรือการอนุมัติ" },
+      { key: "cash_structuring",          pillar: "B", weightInPillar: 0.35, labelTh: "การแยกธุรกรรมเลี่ยงการรายงาน",          labelEn: "Cash structuring",           unit: "ครั้ง",  fmt: v => Math.round(v), descTh: "แยกย่อยธุรกรรมให้ต่ำกว่าเกณฑ์รายงานเพื่อเลี่ยงการตรวจ" },
+      { key: "txn_velocity",              pillar: "B", weightInPillar: 0.30, labelTh: "ความถี่/ปริมาณธุรกรรมเทียบรายได้",       labelEn: "Transaction velocity",       unit: "เท่า",   fmt: v => v.toFixed(1),  descTh: "เงินหมุนเวียนเข้า-ออกบ่อยหรือมากเกินกว่ารายได้" },
+      { key: "debt_stress",               pillar: "B", weightInPillar: 0.20, labelTh: "ภาระหนี้/แรงกดดันทางการเงิน",           labelEn: "Debt stress (DTI)",          unit: "%",     fmt: v => Math.round(v), descTh: "ภาระหนี้สูงจนเป็นแรงกดดันให้แสวงหารายได้นอกระบบ" },
+      { key: "lifestyle_mismatch",        pillar: "B", weightInPillar: 0.15, labelTh: "วิถีชีวิตไม่สอดคล้องกับรายได้",          labelEn: "Lifestyle mismatch",         unit: "ดัชนี", fmt: v => Math.round(v), descTh: "การใช้จ่าย/ทรัพย์สินสูงเกินกว่ารายได้ที่แจ้ง" },
+      { key: "bidder_link",               pillar: "C", weightInPillar: 0.40, labelTh: "ความเชื่อมโยงกับผู้เสนอราคา",            labelEn: "Link to bidders",            unit: "ราย",   fmt: v => Math.round(v), descTh: "เชื่อมโยงกับบริษัทที่เสนอราคางานที่ตนกำกับดูแล" },
+      { key: "nominee_holdings",          pillar: "C", weightInPillar: 0.25, labelTh: "การถือครองโดยตัวแทน/เครือญาติ",         labelEn: "Nominee holdings",           unit: "ราย",   fmt: v => Math.round(v), descTh: "ถือครองทรัพย์สิน/หุ้นผ่านตัวแทนหรือเครือญาติเพื่อปิดบัง" },
+      { key: "codirectorship",            pillar: "C", weightInPillar: 0.20, labelTh: "การเป็นกรรมการร่วม/ที่อยู่ร่วม",         labelEn: "Co-directorship",            unit: "ราย",   fmt: v => Math.round(v), descTh: "เป็นกรรมการร่วมหรือใช้ที่อยู่เดียวกับผู้เกี่ยวข้อง" },
+      { key: "coi_proximity",             pillar: "C", weightInPillar: 0.15, labelTh: "ความใกล้ชิดผลประโยชน์ทับซ้อน",          labelEn: "COI proximity",              unit: "ดัชนี", fmt: v => Math.round(v), descTh: "ใกล้ชิดผู้มีส่วนได้เสียจนเสี่ยงผลประโยชน์ทับซ้อน" },
+    ];
+
+    const PILLARS = ["A", "B", "C"];
+    const PILLAR_META = {
+      A: { nameTh: "การยื่นบัญชี",  nameEn: "Application", triangleTh: "โอกาส (Opportunity)",           source: "ACAS (ป.ป.ช.)",              descTh: "การยื่นบัญชีทรัพย์สินดูผิดปกติหรือไม่" },
+      B: { nameTh: "พฤติกรรม",      nameEn: "Behavioral",  triangleTh: "แรงกดดัน (Pressure)",           source: "AMLO/ธนาคาร — ข้อมูลจำลอง", descTh: "พฤติกรรมการเงินบ่งชี้แรงกดดัน/ความผิดปกติหรือไม่" },
+      C: { nameTh: "ความเชื่อมโยง", nameEn: "Connection",  triangleTh: "การหาเหตุผล (Rationalization)", source: "e-GP/ทะเบียน — ข้อมูลจำลอง",  descTh: "ความสัมพันธ์สร้างผลประโยชน์ทับซ้อนหรือไม่" },
+    };
+
+    const RAW_SCALE = {
+      asset_income_ratio:        { base: 0.8, range: 6.0 },
+      networth_jump:             { base: 2,   range: 55  },
+      concealable_share:         { base: 5,   range: 70  },
+      declaration_inconsistency: { base: 0,   range: 7   },
+      position_opportunity:      { base: 10,  range: 85  },
+      cash_structuring:          { base: 0,   range: 22  },
+      txn_velocity:              { base: 0.5, range: 8   },
+      debt_stress:               { base: 10,  range: 180 },
+      lifestyle_mismatch:        { base: 5,   range: 90  },
+      bidder_link:               { base: 0,   range: 9   },
+      nominee_holdings:          { base: 0,   range: 6   },
+      codirectorship:            { base: 0,   range: 8   },
+      coi_proximity:             { base: 5,   range: 90  },
+    };
+
+    const PROFILES = [
+      { tA: 0.95, tB: 0.90, tC: 0.85 },
+      { tA: 0.85, tB: 0.80, tC: 0.60 },
+      { tA: 0.70, tB: 0.86, tC: 0.78 },
+      { tA: 0.74, tB: 0.55, tC: 0.50 },
+      { tA: 0.50, tB: 0.72, tC: 0.55 },
+      { tA: 0.60, tB: 0.45, tC: 0.66 },
+      { tA: 0.40, tB: 0.60, tC: 0.56 },
+      { tA: 0.55, tB: 0.50, tC: 0.40 },
+      { tA: 0.48, tB: 0.46, tC: 0.36 },
+      { tA: 0.35, tB: 0.56, tC: 0.46 },
+      { tA: 0.42, tB: 0.35, tC: 0.30 },
+      { tA: 0.30, tB: 0.40, tC: 0.36 },
+      { tA: 0.36, tB: 0.28, tC: 0.25 },
+      { tA: 0.25, tB: 0.31, tC: 0.30 },
+      { tA: 0.28, tB: 0.22, tC: 0.20 },
+      { tA: 0.18, tB: 0.26, tC: 0.22 },
+      { tA: 0.12, tB: 0.15, tC: 0.10 },
+      { tA: 0.04, tB: 0.07, tC: 0.05 },
+    ];
+
+    const CONSONANTS = ["ก","ข","ค","ฆ","ง","จ","ฉ","ช","ซ","ฌ","ญ","ฎ","ฏ","ฐ","ฑ","ฒ","ณ","ด"];
+    const SURNAMES   = ["ทดสอบ","ตัวอย่าง","จำลอง","สาธิต"];
+    const TITLES     = ["นาย","นางสาว","นาง"];
+    const POSITIONS  = [
+      "ผู้อำนวยการกอง (จำลอง)",
+      "นักวิเคราะห์นโยบายและแผน (จำลอง)",
+      "หัวหน้าฝ่ายพัสดุ (จำลอง)",
+      "ผู้บริหารองค์กรปกครองส่วนท้องถิ่น (จำลอง)",
+      "นายช่างโยธา (จำลอง)",
+      "เจ้าพนักงานจัดเก็บรายได้ (จำลอง)",
+      "ผู้อำนวยการสำนัก (จำลอง)",
+      "หัวหน้าส่วนราชการ (จำลอง)",
+    ];
+    const COHORTS = ["ระดับสูง (จำลอง)", "ระดับกลาง (จำลอง)", "ระดับต้น (จำลอง)"];
+
+    function signalTargets(pillar, target, idx) {
+      const defs = SIGNAL_DEFS.filter(s => s.pillar === pillar);
+      const amp = 0.13;
+      const offs = defs.map((s, j) => amp * Math.sin(idx * 0.7 + j * 1.7 + pillar.charCodeAt(0) * 0.31));
+      const wmean = defs.reduce((a, s, j) => a + s.weightInPillar * offs[j], 0);
+      const out = {};
+      defs.forEach((s, j) => { out[s.key] = Math.min(0.99, Math.max(0.015, target + (offs[j] - wmean))); });
+      return out;
+    }
+
+    function generateData() {
+      const officials = [], rawMatrix = {};
+      PROFILES.forEach((prof, i) => {
+        const id = "OFF-" + String(i + 1).padStart(4, "0");
+        officials.push({
+          id,
+          nameTh: `${TITLES[i % TITLES.length]} ${CONSONANTS[i]}. ${SURNAMES[i % SURNAMES.length]}`,
+          positionTh: POSITIONS[i % POSITIONS.length],
+          grade: ((i * 7) % 11) + 1,
+          cohort: COHORTS[i % COHORTS.length],
+        });
+        const targets = { A: signalTargets("A", prof.tA, i), B: signalTargets("B", prof.tB, i), C: signalTargets("C", prof.tC, i) };
+        const row = {};
+        SIGNAL_DEFS.forEach(s => {
+          const sc = RAW_SCALE[s.key];
+          row[s.key] = sc.base + targets[s.pillar][s.key] * sc.range;
+        });
+        rawMatrix[id] = row;
+      });
+      return { officials, rawMatrix };
+    }
+
+    function normalizeMatrix(officials, rawMatrix) {
+      const minK = {}, maxK = {};
+      SIGNAL_DEFS.forEach(s => {
+        let mn = Infinity, mx = -Infinity;
+        officials.forEach(o => {
+          const v = rawMatrix[o.id]?.[s.key];
+          if (v == null || isNaN(v)) return;
+          if (v < mn) mn = v; if (v > mx) mx = v;
+        });
+        minK[s.key] = mn; maxK[s.key] = mx;
+      });
+      const norm = {};
+      officials.forEach(o => {
+        const row = {};
+        SIGNAL_DEFS.forEach(s => {
+          const v = rawMatrix[o.id]?.[s.key];
+          if (v == null || isNaN(v)) { row[s.key] = null; return; }
+          const span = maxK[s.key] - minK[s.key];
+          row[s.key] = Math.min(1, Math.max(0, span > 0 ? (v - minK[s.key]) / span : 0));
+        });
+        norm[o.id] = row;
+      });
+      return norm;
+    }
+
+    /* §5 SCORING — pure function. §5.2 missing-pillar renormalization.
+       Hand-verified: OFF-0001 → composite ≈ 97.4, tier RED. */
+    function scoreOfficial(official, normRow, rawRow, weights, signalWeights) {
+      const sw = signalWeights || {};
+      const wmap = { A: weights.wA, B: weights.wB, C: weights.wC };
+      const pillars = {}, availability = {};
+      PILLARS.forEach(p => {
+        const sigDefs = SIGNAL_DEFS.filter(s => s.pillar === p);
+        const available = sigDefs.every(s => normRow[s.key] != null);
+        availability[p] = available;
+        const signals = sigDefs.map(s => ({
+          key: s.key, labelTh: s.labelTh, labelEn: s.labelEn, descTh: s.descTh,
+          raw: rawRow?.[s.key], normalized: normRow[s.key],
+          pillar: p, weightInPillar: sw[s.key] != null ? sw[s.key] : s.weightInPillar,
+          unit: s.unit, fmt: s.fmt,
+        }));
+        const sub = available ? Math.min(1, signals.reduce((a, s) => a + s.normalized * s.weightInPillar, 0)) : null;
+        pillars[p] = { pillar: p, subScore: sub, signals, available };
+      });
+      const availPillars = PILLARS.filter(p => availability[p]);
+      const wsum = availPillars.reduce((a, p) => a + wmap[p], 0) || 1;
+      const effW = {};
+      PILLARS.forEach(p => { effW[p] = availability[p] ? wmap[p] / wsum : 0; });
+      const composite = 100 * availPillars.reduce((a, p) => a + effW[p] * pillars[p].subScore, 0);
+      const tier = composite >= 70 ? "RED" : composite >= 40 ? "AMBER" : "GREEN";
+      const partial = availPillars.length < PILLARS.length;
+      const pendingPillars = PILLARS.filter(p => !availability[p]);
+      const contribs = [];
+      availPillars.forEach(p => {
+        pillars[p].signals.forEach(s => {
+          contribs.push({ key: s.key, pillar: p, labelTh: s.labelTh, labelEn: s.labelEn,
+            normalized: s.normalized, contribution: s.normalized * s.weightInPillar * effW[p] * 100 });
+        });
+      });
+      contribs.sort((a, b) => b.contribution - a.contribution);
+      return { official, pillars, composite, tier, reasonCodes: contribs.slice(0, 3), partial, pendingPillars, effW };
+    }
+
+    function computeQueue(officials, rawMatrix, normMatrix, weights, threshold, signalWeights) {
+      const results = officials.map(o => scoreOfficial(o, normMatrix[o.id] || {}, rawMatrix[o.id] || {}, weights, signalWeights));
+      results.forEach(r => { r.escalate = r.composite >= threshold; });
+      results.sort((a, b) => b.composite - a.composite);
+      results.forEach((r, i) => { r.rank = i + 1; });
+      return results;
+    }
+
+    /* §9.1 GUARDRAIL — SIMULATED API (no network, no real integration) */
+    function simulateApiFetch(pillar, rawARow) {
+      const aDefs = SIGNAL_DEFS.filter(s => s.pillar === "A");
+      let aFrac = aDefs.reduce((acc, s) => {
+        const sc = RAW_SCALE[s.key];
+        return acc + ((rawARow[s.key] - sc.base) / sc.range);
+      }, 0) / aDefs.length;
+      aFrac = Math.min(1, Math.max(0, aFrac));
+      const row = {};
+      SIGNAL_DEFS.filter(s => s.pillar === pillar).forEach((s, j) => {
+        const sc = RAW_SCALE[s.key];
+        const jitter = 0.22 * Math.sin(j * 1.9 + pillar.charCodeAt(0) * 0.37 + aFrac * 3.1);
+        const f = Math.min(0.98, Math.max(0.04, aFrac + jitter));
+        row[s.key] = sc.base + f * sc.range;
+      });
+      return row;
+    }
+
+    function fractionOf(key, raw) {
+      const sc = RAW_SCALE[key];
+      if (sc == null) return 0;
+      return Math.min(1, Math.max(0, (raw - sc.base) / sc.range));
+    }
+
+    /* =====================================================================
+       UI — institutional Thai-primary
+       ===================================================================== */
+    const { useState, useMemo, useCallback } = React;
+
+    const TIER = {
+      RED:   { th: "แดง",    en: "Red",   text: "text-tier-red",   bg: "bg-tier-red",   soft: "bg-red-50",     ring: "ring-tier-red/30",   dot: "bg-tier-red" },
+      AMBER: { th: "เหลือง", en: "Amber", text: "text-tier-amber", bg: "bg-tier-amber", soft: "bg-amber-50",   ring: "ring-tier-amber/30", dot: "bg-tier-amber" },
+      GREEN: { th: "เขียว",  en: "Green", text: "text-tier-green", bg: "bg-tier-green", soft: "bg-emerald-50", ring: "ring-tier-green/30", dot: "bg-tier-green" },
+    };
+    const PILLAR_COLOR = { A: "bg-slate-700", B: "bg-slate-500", C: "bg-slate-400" };
+    const DEFAULTS = { wA: 0.40, wB: 0.35, wC: 0.25, threshold: 60 };
+    const DEFAULT_SIGNAL_WEIGHTS = Object.fromEntries(SIGNAL_DEFS.map(s => [s.key, s.weightInPillar]));
+
+    /* intake form constants */
+    const AUTHORITY_LEVELS = [
+      { key: "none", th: "ไม่มี", idx: 10 },
+      { key: "low",  th: "ต่ำ",   idx: 35 },
+      { key: "med",  th: "ปานกลาง", idx: 60 },
+      { key: "high", th: "สูง",   idx: 88 },
+    ];
+    const DECL_DEFAULT = { assetsM: 22, liabM: 5, prevNWM: 13, salaryMonthly: 70000, years: 16, concealM: 5, issues: 2, authority: "med" };
+    const DECL_PRESETS = {
+      high: { assetsM: 65, liabM: 3,  prevNWM: 20,  salaryMonthly: 65000, years: 13, concealM: 28,  issues: 5, authority: "high" },
+      mid:  DECL_DEFAULT,
+      low:  { assetsM: 8,  liabM: 4,  prevNWM: 3.8, salaryMonthly: 90000, years: 22, concealM: 0.6, issues: 0, authority: "none" },
+    };
+
+    function deriveASignals(d) {
+      const assets = (d.assetsM || 0) * 1e6, liab = (d.liabM || 0) * 1e6;
+      const prevNW = (d.prevNWM || 0) * 1e6, nw = assets - liab;
+      const annualIncome = (d.salaryMonthly || 0) * 12;
+      const concealable = (d.concealM || 0) * 1e6;
+      const ratio = annualIncome * (d.years || 0) > 0 ? assets / (annualIncome * d.years) : 0;
+      const jump  = prevNW > 0 ? ((nw - prevNW) / prevNW) * 100 : 0;
+      const share = assets > 0 ? (concealable / assets) * 100 : 0;
+      const opp = (AUTHORITY_LEVELS.find(a => a.key === d.authority) || AUTHORITY_LEVELS[0]).idx;
+      return {
+        asset_income_ratio: Math.max(0, ratio),
+        networth_jump: Math.max(0, jump),
+        concealable_share: Math.min(100, Math.max(0, share)),
+        declaration_inconsistency: Math.max(0, d.issues || 0),
+        position_opportunity: opp,
+      };
+    }
+
+    function TierChip({ tier, small }) {
+      const t = TIER[tier];
+      return (
+        <span className={`inline-flex items-center gap-1.5 rounded-sm font-semibold
+          ${small ? "px-2 py-0.5 text-xs" : "px-2.5 py-1 text-sm"}
+          ${t.soft} ${t.text} ring-1 ${t.ring}`}>
+          <span className={`inline-block h-2 w-2 rounded-full ${t.dot}`} />
+          {t.th}
+        </span>
+      );
+    }
+
+    function Bar({ value, colorClass, height = "h-2" }) {
+      return (
+        <div className={`w-full ${height} rounded-sm bg-slate-100 overflow-hidden`}>
+          <div className={`${height} ${colorClass} rounded-sm`} style={{ width: `${Math.min(100, Math.round((value || 0) * 100))}%` }} />
+        </div>
+      );
+    }
+
+    /* --- Banner --- */
+    function Banner() {
+      return (
+        <div className="sticky top-0 z-30 bg-amber-100 border-b border-amber-300 text-amber-900">
+          <div className="mx-auto max-w-[1500px] px-4 py-1.5 flex items-center justify-center gap-2 text-center text-xs sm:text-sm font-semibold">
+            <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 9v4m0 4h.01M10.3 3.86l-8.5 14.7A1.5 1.5 0 0 0 3.1 21h17.8a1.5 1.5 0 0 0 1.3-2.44l-8.5-14.7a1.5 1.5 0 0 0-2.6 0Z"/></svg>
+            <span>ข้อมูลจำลองเพื่อสาธิต — SYNTHETIC DATA, ILLUSTRATIVE ONLY</span>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- Header --- */
+    function Header({ onOpenSettings }) {
+      return (
+        <header className="bg-gov text-white">
+          <div className="mx-auto max-w-[1500px] px-5 py-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 place-items-center rounded-sm bg-white/10 ring-1 ring-white/20 font-bold text-lg tracking-tight">ABC</div>
+              <div>
+                <h1 className="text-xl font-bold leading-tight">ABC Score — ระบบจัดลำดับความเสี่ยงการยื่นบัญชีทรัพย์สิน</h1>
+                <p className="text-sm text-white/70 leading-tight">การจัดลำดับความเสี่ยง — สาธิต · Risk triage screening (demo)</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="hidden lg:block text-right text-xs text-white/60 leading-relaxed">
+                <div>เครื่องมือคัดกรองเพื่อจัดลำดับการตรวจสอบ · มนุษย์เป็นผู้ตัดสิน</div>
+                <div>แบบจำลองตัวชี้วัดถ่วงน้ำหนัก (โปร่งใส) — ไม่ใช่การเรียนรู้ของเครื่อง</div>
+              </div>
+              <button onClick={onOpenSettings}
+                className="inline-flex items-center gap-2 rounded-md bg-white/10 ring-1 ring-white/20 px-3 py-2 text-sm font-semibold text-white hover:bg-white/20">
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+                ตั้งค่า
+              </button>
+            </div>
+          </div>
+        </header>
+      );
+    }
+
+    /* --- SOP Toolbar --- */
+    function SopToolbar({ escalateCount, total, threshold, onAddCase, extraCount, onClearExtras }) {
+      return (
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <div className="flex items-center gap-3 rounded-md bg-gov/5 ring-1 ring-gov/15 px-4 py-2.5">
+            <div className="grid h-9 w-9 place-items-center rounded-sm bg-gov text-white">
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="m9 12 2 2 4-4"/><path d="M21 12c.552 0 1.005-.449.95-.998a10 10 0 0 0-8.987-8.987c-.549-.055-.998.398-.998.95v8.035a1 1 0 0 0 1 1Z"/><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/></svg>
+            </div>
+            <div>
+              <div className="text-xs text-slate-600 leading-tight">เสนอให้ตรวจสอบยืนยัน (คะแนน ≥ {threshold})</div>
+              <div className="text-xl font-extrabold text-gov tabular-nums leading-tight">{escalateCount} <span className="text-sm font-semibold text-slate-500">/ {total} ราย</span></div>
+            </div>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            {extraCount > 0 && (
+              <button onClick={onClearExtras} className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-50">
+                ล้างเคสที่เพิ่ม ({extraCount})
+              </button>
+            )}
+            <button onClick={onAddCase} className="inline-flex items-center gap-1.5 rounded-md bg-gov px-4 py-2 text-sm font-semibold text-white hover:bg-gov/90">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
+              รับเรื่องการยื่นบัญชี (จำลอง)
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- Queue Table --- */
+    function QueueRow({ r, selected, onClick }) {
+      const subA = r.pillars.A.subScore, subB = r.pillars.B.subScore, subC = r.pillars.C.subScore;
+      return (
+        <tr onClick={onClick}
+          className={`cursor-pointer border-t border-slate-100 hover:bg-slate-50 ${selected ? "bg-gov/5" : ""}`}>
+          <td className="px-3 py-2.5 text-center tabular-nums text-slate-400 font-semibold">{r.rank}</td>
+          <td className="px-3 py-2.5">
+            <div className="font-semibold text-slate-800 leading-tight flex items-center gap-1.5">
+              {r.official.nameTh}
+              {r.official.added && <span className="rounded-sm bg-gov/10 text-gov text-[10px] font-bold px-1.5 py-0.5 ring-1 ring-gov/20">เพิ่มจำลอง</span>}
+            </div>
+            <div className="text-xs text-slate-400 tabular-nums">{r.official.id}</div>
+          </td>
+          <td className="px-3 py-2.5 text-sm text-slate-600 leading-tight max-w-[200px]">
+            <div className="truncate">{r.official.positionTh}</div>
+            <div className="text-xs text-slate-400">ระดับ {r.official.grade} · {r.official.cohort}</div>
+          </td>
+          {[["A", subA], ["B", subB], ["C", subC]].map(([p, v]) => (
+            <td key={p} className="px-2 py-2.5 w-[80px]">
+              {v == null ? (
+                <div className="text-[10px] text-slate-300 text-center font-semibold uppercase tracking-wide">รอ API</div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <Bar value={v} colorClass={PILLAR_COLOR[p]} />
+                  <span className="text-xs tabular-nums text-slate-500 w-7 text-right">{Math.round(v * 100)}</span>
+                </div>
+              )}
+            </td>
+          ))}
+          <td className="px-3 py-2.5 w-[120px]">
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-bold tabular-nums text-slate-900 w-8 text-right">{r.composite.toFixed(0)}</span>
+              <div className="flex-1"><Bar value={r.composite / 100} colorClass={TIER[r.tier].bg} height="h-2.5" /></div>
+            </div>
+            {r.partial && <div className="text-[10px] text-slate-400 mt-0.5">คะแนนบางส่วน (รอ {r.pendingPillars.join(",")})</div>}
+          </td>
+          <td className="px-3 py-2.5"><TierChip tier={r.tier} small /></td>
+          <td className="px-3 py-2.5 text-center">
+            {r.escalate
+              ? <span className="inline-flex items-center gap-1 text-xs font-bold text-gov"><svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m18 15-6-6-6 6"/></svg>เสนอ</span>
+              : <span className="text-xs text-slate-300">—</span>}
+          </td>
+        </tr>
+      );
+    }
+
+    function QueueTable({ results, selectedId, onSelect, threshold }) {
+      return (
+        <div className="rounded-md border border-slate-200 bg-white overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+            <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide">คิวจัดลำดับความเสี่ยง (Ranked queue)</h2>
+            <span className="text-xs text-slate-400">เรียงตามคะแนนรวมจากมากไปน้อย · คลิกแถวเพื่อดูเหตุผล</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-xs uppercase tracking-wide text-slate-400 bg-slate-50/60">
+                  <th className="px-3 py-2 font-semibold text-center w-10">#</th>
+                  <th className="px-3 py-2 font-semibold">เจ้าหน้าที่ (จำลอง)</th>
+                  <th className="px-3 py-2 font-semibold">ตำแหน่ง</th>
+                  <th className="px-2 py-2 font-semibold text-center">A</th>
+                  <th className="px-2 py-2 font-semibold text-center">B</th>
+                  <th className="px-2 py-2 font-semibold text-center">C</th>
+                  <th className="px-3 py-2 font-semibold">คะแนนรวม</th>
+                  <th className="px-3 py-2 font-semibold">ระดับ</th>
+                  <th className="px-3 py-2 font-semibold text-center">เสนอ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map(r => (
+                  <QueueRow key={r.official.id} r={r} selected={selectedId === r.official.id} onClick={() => onSelect(r.official.id)} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-4 py-2 border-t border-slate-100 text-xs text-slate-400">
+            แถบ A/B/C = คะแนนย่อยรายเสาหลัก (0–100) · เส้นเกณฑ์เสนอตรวจสอบที่คะแนน {threshold}
+          </div>
+        </div>
+      );
+    }
+
+    /* --- DrillDown (right slide-over) --- */
+    function SignalRow({ s }) {
+      return (
+        <div className="flex items-center gap-3 py-1.5">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-slate-700 leading-tight truncate">{s.labelTh} <span className="text-slate-400">({s.labelEn})</span></div>
+            <div className="text-xs text-slate-400 tabular-nums">ค่าดิบ {s.fmt(s.raw)} {s.unit} · น้ำหนักในเสา {s.weightInPillar.toFixed(2)}</div>
+          </div>
+          <div className="w-24 shrink-0"><Bar value={s.normalized} colorClass="bg-slate-400" /></div>
+          <div className="w-9 text-right text-xs tabular-nums text-slate-500 shrink-0">{Math.round(s.normalized * 100)}</div>
+        </div>
+      );
+    }
+
+    function PillarBlock({ ps, weight }) {
+      const meta = PILLAR_META[ps.pillar];
+      const pending = !ps.available;
+      return (
+        <div className={`rounded-md border p-3 ${pending ? "border-dashed border-slate-300 bg-slate-50/60" : "border-slate-200"}`}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className={`inline-grid h-6 w-6 place-items-center rounded-sm text-white text-xs font-bold ${pending ? "bg-slate-400" : "bg-slate-700"}`}>{ps.pillar}</span>
+              <div className="leading-snug">
+                <div className="text-sm font-bold text-slate-800">{meta.nameTh}</div>
+                <div className="text-xs text-slate-400 mt-0.5">{meta.nameEn} · {meta.triangleTh}</div>
+              </div>
+            </div>
+            <div className="text-right">
+              {pending
+                ? <div className="text-xs font-bold text-slate-400 uppercase tracking-wide">รอ API</div>
+                : <div className="text-lg font-bold tabular-nums text-slate-900 leading-none">{Math.round(ps.subScore * 100)}</div>}
+              <div className="text-xs text-slate-400">น้ำหนัก {weight.toFixed(2)}</div>
+            </div>
+          </div>
+          {pending ? (
+            <div className="rounded-md bg-white ring-1 ring-slate-200 px-3 py-3 text-xs text-slate-500 leading-relaxed">
+              แหล่งข้อมูล <span className="font-semibold text-slate-600">{meta.source}</span> ยังไม่ได้เชื่อมต่อ —
+              เมื่อมีข้อตกลงแบ่งปันข้อมูล/เชื่อม API แล้ว สัญญาณของเสานี้จะถูกดึงอัตโนมัติและรวมเข้าคะแนน
+              <div className="mt-1.5 text-[11px] text-slate-400">ขณะนี้คะแนนรวมคำนวณจากเสาที่มีข้อมูล (น้ำหนักถูกปรับสัดส่วนใหม่)</div>
+            </div>
+          ) : (
+            <React.Fragment>
+              <Bar value={ps.subScore} colorClass={PILLAR_COLOR[ps.pillar]} height="h-1.5" />
+              <div className="mt-2 divide-y divide-slate-50">
+                {ps.signals.map(s => <SignalRow key={s.key} s={s} />)}
+              </div>
+              <div className="mt-1 text-[11px] text-slate-400">แหล่งข้อมูล: {meta.source}</div>
+            </React.Fragment>
+          )}
+        </div>
+      );
+    }
+
+    function DrillDown({ result, weights, threshold, onClose }) {
+      if (!result) return null;
+      const o = result.official;
+      const t = TIER[result.tier];
+      return (
+        <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-slate-900/30" onClick={onClose} />
+          <div className="relative h-full w-full max-w-xl bg-white shadow-2xl overflow-y-auto">
+            <div className="sticky top-0 z-10 bg-gov text-white px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs text-white/60 tabular-nums">{o.id} · อันดับ #{result.rank}</div>
+                  <div className="text-xl font-bold leading-tight">{o.nameTh}</div>
+                  <div className="text-sm text-white/70 leading-tight">{o.positionTh} · ระดับ {o.grade}</div>
+                </div>
+                <button onClick={onClose} className="rounded-sm p-1 text-white/70 hover:bg-white/10 hover:text-white">
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-4xl font-extrabold tabular-nums">{result.composite.toFixed(1)}</span>
+                  <span className="text-sm text-white/60">/ 100</span>
+                </div>
+                <TierChip tier={result.tier} />
+                {result.escalate
+                  ? <span className="ml-auto inline-flex items-center gap-1.5 rounded-sm bg-white/15 px-2.5 py-1 text-sm font-semibold">เสนอให้ตรวจสอบยืนยัน</span>
+                  : <span className="ml-auto text-sm text-white/60">ต่ำกว่าเกณฑ์เสนอ ({threshold})</span>}
+              </div>
+              {result.partial && (
+                <div className="mt-3 rounded-sm bg-amber-400/15 ring-1 ring-amber-300/30 px-3 py-2 text-xs text-amber-100 leading-relaxed">
+                  ⚠ คะแนนนี้คำนวณจากเสาที่มีข้อมูลแล้วเท่านั้น (เสา {result.pendingPillars.join(", ")} รอการเชื่อมต่อ API) —
+                  น้ำหนักถูกปรับสัดส่วนใหม่ตามหลักการเสาแบบโมดูลาร์ คะแนนจะสมบูรณ์เมื่อข้อมูลครบ
+                </div>
+              )}
+            </div>
+            <div className="p-5 space-y-5">
+              <section>
+                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-1">เหตุผลประกอบคะแนน (Reason codes)</h3>
+                <p className="text-xs text-slate-500 mb-3">สามสัญญาณที่ส่งผลต่อคะแนนรวมมากที่สุด (ค่าปกติ × น้ำหนักในเสา × น้ำหนักเสา)</p>
+                <ol className="space-y-2">
+                  {result.reasonCodes.map((rc, i) => (
+                    <li key={rc.key} className="flex items-center gap-3 rounded-md bg-slate-50 ring-1 ring-slate-200 px-3 py-2.5">
+                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-gov text-white text-sm font-bold">{i + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-slate-800 leading-tight">{rc.labelTh}</div>
+                        <div className="text-xs text-slate-400 leading-tight">{rc.labelEn} · เสา {rc.pillar} · ค่าปกติ {Math.round(rc.normalized * 100)}</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-base font-bold tabular-nums text-gov leading-none">+{rc.contribution.toFixed(1)}</div>
+                        <div className="text-[11px] text-slate-400">คะแนน</div>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+              <section className="space-y-3">
+                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide">คะแนนย่อยรายเสาหลัก (Pillar breakdown)</h3>
+                <PillarBlock ps={result.pillars.A} weight={weights.wA} />
+                <PillarBlock ps={result.pillars.B} weight={weights.wB} />
+                <PillarBlock ps={result.pillars.C} weight={weights.wC} />
+              </section>
+              <p className="text-xs text-slate-400 leading-relaxed border-t border-slate-100 pt-3">
+                ข้อมูลทั้งหมดเป็นข้อมูลจำลองเพื่อการสาธิต ผลลัพธ์เป็นเพียงข้อเสนอเพื่อจัดลำดับการตรวจสอบ
+                การตัดสินใจขั้นสุดท้ายเป็นของเจ้าหน้าที่ ป.ป.ช. (human-in-the-loop) — เครื่องมือนี้ไม่ชี้ถูกผิด ไม่ตัดสินความผิด
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- Add Case Form (centered modal) --- */
+    const STATUS_PILL = {
+      connected: { th: "เชื่อมต่อแล้ว", cls: "bg-emerald-50 text-tier-green ring-tier-green/30" },
+      pending:   { th: "รอเชื่อมต่อ",   cls: "bg-slate-100 text-slate-500 ring-slate-300" },
+      loading:   { th: "กำลังดึงข้อมูล", cls: "bg-blue-50 text-blue-700 ring-blue-300" },
+      fetched:   { th: "ดึงข้อมูลแล้ว (จำลอง)", cls: "bg-emerald-50 text-tier-green ring-tier-green/30" },
+    };
+
+    function DeclField({ label, en, value, onChange, unit, step = 1, min = 0, max }) {
+      return (
+        <div>
+          <label className="text-[11px] font-semibold text-slate-600 leading-tight block">{label} <span className="font-normal text-slate-400">({en})</span></label>
+          <div className="mt-1 flex items-center rounded-md border border-slate-300 focus-within:ring-2 focus-within:ring-gov/30">
+            <input type="number" value={value} step={step} min={min} max={max}
+              onChange={e => onChange(e.target.value === "" ? 0 : parseFloat(e.target.value))}
+              className="w-full rounded-l-md px-2.5 py-1.5 text-sm tabular-nums focus:outline-none" />
+            <span className="px-2 text-[11px] text-slate-400 whitespace-nowrap">{unit}</span>
+          </div>
+        </div>
+      );
+    }
+
+    function PillarDeclarationSection({ decl, setField, derived }) {
+      const meta = PILLAR_META["A"];
+      const defs = SIGNAL_DEFS.filter(s => s.pillar === "A");
+      const pill = STATUS_PILL.connected;
+      return (
+        <div className="rounded-md border border-slate-200 p-3">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <span className="inline-grid h-6 w-6 place-items-center rounded-sm bg-slate-700 text-white text-xs font-bold">A</span>
+              <div className="text-sm font-bold text-slate-800 leading-snug">{meta.nameTh} <span className="font-normal text-slate-400">({meta.nameEn})</span></div>
+            </div>
+            <span className={`shrink-0 inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-semibold ring-1 ${pill.cls}`}>
+              <span className="h-1.5 w-1.5 rounded-full bg-current"></span>{pill.th}
+            </span>
+          </div>
+          <div className="text-[11px] text-slate-400 mb-2">แหล่งข้อมูล {meta.source} — กรอกข้อมูลจากบัญชีทรัพย์สินที่ยื่น ระบบจะคำนวณสัญญาณให้</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            <DeclField label="ทรัพย์สินที่ยื่นรวม" en="Total assets" unit="ล้านบาท" step={0.5} value={decl.assetsM} onChange={v => setField("assetsM", v)} />
+            <DeclField label="หนี้สินรวม" en="Liabilities" unit="ล้านบาท" step={0.5} value={decl.liabM} onChange={v => setField("liabM", v)} />
+            <DeclField label="มูลค่าสุทธิครั้งก่อน" en="Prev. net worth" unit="ล้านบาท" step={0.5} value={decl.prevNWM} onChange={v => setField("prevNWM", v)} />
+            <DeclField label="เงินเดือน" en="Salary" unit="บาท/เดือน" step={5000} value={decl.salaryMonthly} onChange={v => setField("salaryMonthly", v)} />
+            <DeclField label="อายุราชการ" en="Years in service" unit="ปี" step={1} value={decl.years} onChange={v => setField("years", v)} />
+            <DeclField label="ทรัพย์สินปกปิดได้" en="Cash/gold/foreign" unit="ล้านบาท" step={0.5} value={decl.concealM} onChange={v => setField("concealM", v)} />
+            <DeclField label="ข้อบกพร่องที่พบ" en="Issues found" unit="รายการ" step={1} min={0} max={7} value={decl.issues} onChange={v => setField("issues", v)} />
+            <div className="col-span-2 sm:col-span-1">
+              <label className="text-[11px] font-semibold text-slate-600 leading-tight block">อำนาจจัดซื้อ/อนุมัติ <span className="font-normal text-slate-400">(Authority)</span></label>
+              <select value={decl.authority} onChange={e => setField("authority", e.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gov/30">
+                {AUTHORITY_LEVELS.map(a => <option key={a.key} value={a.key}>{a.th}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="mt-3 rounded-md bg-slate-50 ring-1 ring-slate-200 p-2.5">
+            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">สัญญาณที่ระบบคำนวณได้ (Derived signals)</div>
+            <div className="space-y-1">
+              {defs.map(s => {
+                const v = derived[s.key];
+                return (
+                  <div key={s.key} className="flex items-center gap-3 py-0.5">
+                    <div className="flex-1 min-w-0 text-xs text-slate-600 leading-tight truncate">{s.labelTh} <span className="text-slate-400">({s.labelEn})</span></div>
+                    <div className="w-20 shrink-0"><Bar value={fractionOf(s.key, v)} colorClass="bg-slate-400" /></div>
+                    <div className="w-16 text-right text-xs tabular-nums font-semibold text-slate-700 shrink-0">{s.fmt(v)} {s.unit}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function PillarApiSection({ pillar, status, values, onSimulate, onClear }) {
+      const meta = PILLAR_META[pillar];
+      const defs = SIGNAL_DEFS.filter(s => s.pillar === pillar);
+      const pill = STATUS_PILL[status];
+      const note = pillar === "B"
+        ? "ข้อมูลพฤติกรรมทางการเงินจาก AMLO (ปปง.)/ธนาคาร ต้องมีข้อตกลงแบ่งปันข้อมูล (MOU) ก่อน"
+        : "ข้อมูลความเชื่อมโยงจาก e-GP / ทะเบียนธุรกิจ / ACT Ai เปิดเผยเพียงบางส่วน";
+      return (
+        <div className={`rounded-md border p-3 ${status === "fetched" ? "border-slate-200" : "border-dashed border-slate-300 bg-slate-50/60"}`}>
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <span className={`inline-grid h-6 w-6 place-items-center rounded-sm text-white text-xs font-bold ${status === "fetched" ? "bg-slate-700" : "bg-slate-400"}`}>{pillar}</span>
+              <div className="text-sm font-bold text-slate-800 leading-snug">{meta.nameTh} <span className="font-normal text-slate-400">({meta.nameEn})</span></div>
+            </div>
+            <span className={`inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-semibold ring-1 ${pill.cls}`}>
+              {status === "loading"
+                ? <svg viewBox="0 0 24 24" className="h-3 w-3 animate-spin" fill="none" stroke="currentColor" strokeWidth="3"><path d="M21 12a9 9 0 1 1-6.2-8.6" strokeLinecap="round"/></svg>
+                : <span className="h-1.5 w-1.5 rounded-full bg-current"></span>}
+              {pill.th}
+            </span>
+          </div>
+          <div className="text-[11px] text-slate-400 mb-2">แหล่งข้อมูล {meta.source}</div>
+          {status === "pending" && (
+            <div className="rounded-md bg-white ring-1 ring-slate-200 px-3 py-3">
+              <p className="text-xs text-slate-500 leading-relaxed">{note} — เมื่อเชื่อม API แล้ว ระบบจะดึงสัญญาณเหล่านี้อัตโนมัติ</p>
+              <button onClick={onSimulate}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-gov bg-white px-3 py-1.5 text-xs font-semibold text-gov hover:bg-gov/5">
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 17H7A5 5 0 0 1 7 7h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/></svg>
+                จำลองการเชื่อมต่อ API
+              </button>
+              <span className="ml-2 text-[11px] text-slate-400">(สาธิต — ไม่มีการเรียกเครือข่ายจริง)</span>
+            </div>
+          )}
+          {status === "loading" && (
+            <div className="rounded-md bg-white ring-1 ring-slate-200 px-3 py-3 space-y-2">
+              <div className="text-xs text-blue-700 font-medium">กำลังดึงข้อมูลจาก {meta.source.split(" ")[0]} … (จำลอง)</div>
+              {defs.map(s => (
+                <div key={s.key} className="h-3 rounded bg-slate-100 overflow-hidden">
+                  <div className="h-full w-1/3 bg-slate-200 animate-pulse"></div>
+                </div>
+              ))}
+            </div>
+          )}
+          {status === "fetched" && values && (
+            <div>
+              <div className="space-y-1.5">
+                {defs.map(s => {
+                  const v = values[s.key];
+                  return (
+                    <div key={s.key} className="flex items-center gap-3 py-0.5">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-slate-600 leading-tight truncate">{s.labelTh} <span className="text-slate-400">({s.labelEn})</span></div>
+                      </div>
+                      <div className="w-20 shrink-0"><Bar value={fractionOf(s.key, v)} colorClass="bg-slate-400" /></div>
+                      <div className="w-16 text-right text-xs tabular-nums font-semibold text-slate-600 shrink-0">{s.fmt(v)} {s.unit}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <button onClick={onClear} className="mt-2 text-[11px] font-semibold text-slate-400 hover:text-slate-600 underline">ยกเลิกการเชื่อมต่อ (เล่นซ้ำ)</button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function AddCaseForm({ nextIndex, onAdd, onClose, scorePreview }) {
+      const [nameTh, setNameTh] = useState(`ผู้ยื่นบัญชี (จำลอง) ${nextIndex}`);
+      const [positionTh, setPositionTh] = useState(POSITIONS[nextIndex % POSITIONS.length]);
+      const [grade, setGrade] = useState(5);
+      const [cohort, setCohort] = useState(COHORTS[0]);
+      const [decl, setDecl] = useState(DECL_DEFAULT);
+      const [bStatus, setBStatus] = useState("pending");
+      const [cStatus, setCStatus] = useState("pending");
+      const [rawB, setRawB] = useState(null);
+      const [rawC, setRawC] = useState(null);
+
+      const derivedA = useMemo(() => deriveASignals(decl), [decl]);
+      const setField = useCallback((k, v) => setDecl(prev => ({ ...prev, [k]: v })), []);
+      const presetA = useCallback((level) => setDecl(DECL_PRESETS[level]), []);
+
+      const simulate = (pillar) => {
+        const setStatus = pillar === "B" ? setBStatus : setCStatus;
+        const setRawP   = pillar === "B" ? setRawB   : setRawC;
+        setStatus("loading");
+        setTimeout(() => {
+          setRawP(simulateApiFetch(pillar, derivedA));
+          setStatus("fetched");
+        }, 1100);
+      };
+      const clearP = (pillar) => {
+        if (pillar === "B") { setBStatus("pending"); setRawB(null); }
+        else { setCStatus("pending"); setRawC(null); }
+      };
+
+      const assembledRaw = { ...derivedA, ...(rawB || {}), ...(rawC || {}) };
+      const tempOfficial = { id: "OFF-PREVIEW", nameTh, positionTh, grade: parseInt(grade, 10) || 1, cohort, added: true };
+      const preview = scorePreview(tempOfficial, assembledRaw);
+      const pendingList = preview.pendingPillars;
+
+      const submit = () => {
+        const id = "OFF-S" + String(nextIndex).padStart(2, "0");
+        onAdd({ id, nameTh: nameTh.trim() || `ผู้ยื่นบัญชี (จำลอง) ${nextIndex}`, positionTh, grade: parseInt(grade, 10), cohort, added: true }, assembledRaw);
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 overflow-y-auto" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
+          <div className="relative my-6 w-full max-w-2xl rounded-lg bg-white shadow-2xl">
+            <div className="sticky top-0 z-10 rounded-t-lg bg-gov text-white px-5 py-3 flex items-center justify-between">
+              <div>
+                <div className="text-base font-bold leading-tight">รับเรื่องการยื่นบัญชี (จำลอง)</div>
+                <div className="text-xs text-white/60">Declaration intake · ในหน่วยความจำเท่านั้น ไม่มีการบันทึก ไม่มีการเรียกเครือข่าย</div>
+              </div>
+              <button onClick={onClose} className="rounded-sm p-1 text-white/70 hover:bg-white/10 hover:text-white">
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="rounded-md bg-amber-50 ring-1 ring-amber-200 px-3 py-2 text-xs text-amber-800">
+                ⚠ ค่าทั้งหมดเป็นข้อมูล<span className="font-bold">จำลอง</span> — เสา A กรอกเอง (ข้อมูลที่ ป.ป.ช. ควบคุม) · เสา B, C สาธิตการ "เชื่อม API" เพื่อแสดงสิ่งที่จะเกิดเมื่อมีข้อตกลงแบ่งปันข้อมูล
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="text-xs font-semibold text-slate-600">ชื่อ (จำลอง)</label>
+                  <input value={nameTh} onChange={e => setNameTh(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gov/30" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600">ตำแหน่ง (จำลอง)</label>
+                  <select value={positionTh} onChange={e => setPositionTh(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gov/30">
+                    {POSITIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">ระดับ</label>
+                    <input type="number" min="1" max="11" value={grade} onChange={e => setGrade(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gov/30" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600">กลุ่มเทียบ</label>
+                    <select value={cohort} onChange={e => setCohort(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gov/30">
+                      {COHORTS.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-slate-500">ตัวอย่างบัญชีที่ยื่น:</span>
+                <button onClick={() => presetA("high")} className="rounded-sm px-2 py-1 bg-red-50 text-tier-red font-semibold ring-1 ring-tier-red/20 hover:bg-red-100">เสี่ยงสูง</button>
+                <button onClick={() => presetA("mid")}  className="rounded-sm px-2 py-1 bg-amber-50 text-tier-amber font-semibold ring-1 ring-tier-amber/20 hover:bg-amber-100">ปานกลาง</button>
+                <button onClick={() => presetA("low")}  className="rounded-sm px-2 py-1 bg-emerald-50 text-tier-green font-semibold ring-1 ring-tier-green/20 hover:bg-emerald-100">เสี่ยงต่ำ</button>
+              </div>
+              <div className="space-y-3">
+                <PillarDeclarationSection decl={decl} setField={setField} derived={derivedA} />
+                <PillarApiSection pillar="B" status={bStatus} values={rawB} onSimulate={() => simulate("B")} onClear={() => clearP("B")} />
+                <PillarApiSection pillar="C" status={cStatus} values={rawC} onSimulate={() => simulate("C")} onClear={() => clearP("C")} />
+              </div>
+            </div>
+            <div className="sticky bottom-0 rounded-b-lg bg-slate-50 border-t border-slate-200 px-5 py-3">
+              <div className="flex items-center gap-4">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xs text-slate-500">คะแนนตัวอย่าง</span>
+                  <span className="text-2xl font-extrabold tabular-nums text-slate-900">{preview.composite.toFixed(1)}</span>
+                </div>
+                <TierChip tier={preview.tier} small />
+                <div className="text-xs text-slate-500">
+                  {pendingList.length === 0
+                    ? <span className="text-tier-green font-semibold">ครบทั้ง 3 เสา (A·B·C)</span>
+                    : <span>คำนวณจากเสา {PILLARS.filter(p => !pendingList.includes(p)).join("+")} · <span className="text-amber-700 font-semibold">รอ {pendingList.join(", ")}</span></span>}
+                </div>
+                <div className="ml-auto flex gap-2">
+                  <button onClick={onClose} className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">ยกเลิก</button>
+                  <button onClick={submit} className="rounded-md bg-gov px-4 py-2 text-sm font-semibold text-white hover:bg-gov/90">เพิ่มเข้าคิว</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- Settings Drawer (left slide-over, calibrator role) --- */
+    function FactorWeightGroup({ pillar, signalWeights, setSignalWeight }) {
+      const meta = PILLAR_META[pillar];
+      const defs = SIGNAL_DEFS.filter(s => s.pillar === pillar);
+      const sum = defs.reduce((a, s) => a + signalWeights[s.key], 0);
+      return (
+        <div className="rounded-md border border-slate-200 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="inline-grid h-5 w-5 place-items-center rounded-sm bg-slate-700 text-white text-[11px] font-bold">{pillar}</span>
+              <div className="text-xs font-bold text-slate-800">{meta.nameTh} <span className="font-normal text-slate-400">({meta.nameEn})</span></div>
+            </div>
+            <span className="text-[11px] text-slate-400 tabular-nums">รวม {sum.toFixed(2)}</span>
+          </div>
+          <div className="space-y-3">
+            {defs.map(s => (
+              <div key={s.key}>
+                <div className="flex items-start justify-between gap-2">
+                  <label className="text-xs font-medium text-slate-700 leading-snug">{s.labelTh}</label>
+                  <span className="text-[11px] tabular-nums font-bold text-slate-800 shrink-0">{signalWeights[s.key].toFixed(2)}</span>
+                </div>
+                <div className="text-[11px] text-slate-400 leading-snug">{s.descTh}</div>
+                <input type="range" min="0" max="1" step="0.01" value={signalWeights[s.key]}
+                  onChange={e => setSignalWeight(s.key, parseFloat(e.target.value))}
+                  className="mt-1 w-full accent-slate-600 cursor-pointer" />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function WeightSlider({ pillar, value, onChange }) {
+      const meta = PILLAR_META[pillar];
+      return (
+        <div>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2 min-w-0">
+              <span className="mt-0.5 inline-grid h-6 w-6 shrink-0 place-items-center rounded-sm bg-slate-700 text-white text-xs font-bold">{pillar}</span>
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-slate-800 leading-snug">{meta.nameTh} <span className="text-xs font-normal text-slate-400">{meta.nameEn}</span></div>
+                <div className="text-xs text-slate-500 leading-snug mt-0.5">{meta.descTh}</div>
+              </div>
+            </div>
+            <span className="tabular-nums text-sm font-bold text-slate-900 shrink-0">{value.toFixed(2)}</span>
+          </div>
+          <input type="range" min="0" max="1" step="0.01" value={value}
+            onChange={e => onChange(parseFloat(e.target.value))}
+            className="mt-2 w-full accent-gov cursor-pointer" />
+        </div>
+      );
+    }
+
+    function SettingsDrawer({ open, weights, setWeight, threshold, setThreshold, resetAll, signalWeights, setSignalWeight, onClose }) {
+      const [advancedOpen, setAdvancedOpen] = useState(false);
+      if (!open) return null;
+      const sum = weights.wA + weights.wB + weights.wC;
+      return (
+        <div className="fixed inset-0 z-40 flex justify-start" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-slate-900/20" onClick={onClose} />
+          <div className="relative h-full w-full max-w-md bg-white shadow-2xl overflow-y-auto">
+            <div className="sticky top-0 z-10 bg-slate-800 text-white px-5 py-3 flex items-center justify-between">
+              <div>
+                <div className="text-base font-bold leading-tight">ตั้งค่าการให้คะแนน</div>
+                <div className="text-xs text-white/60">Scoring calibration · สำหรับคณะผู้เชี่ยวชาญ</div>
+              </div>
+              <button onClick={onClose} className="rounded-sm p-1 text-white/70 hover:bg-white/10 hover:text-white">
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div className="p-5 space-y-5">
+              <div className="rounded-md bg-slate-50 ring-1 ring-slate-200 px-3 py-2 text-xs text-slate-500 leading-relaxed">
+                ค่าน้ำหนักและเกณฑ์<span className="font-semibold text-slate-600">ยังอยู่ระหว่างการพิจารณา</span>ของคณะผู้เชี่ยวชาญ —
+                เมื่อปรับ คิวจะจัดอันดับใหม่ทันที เพื่อให้เห็นผลของการถ่วงน้ำหนัก
+              </div>
+              <section>
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className="text-sm font-bold text-slate-800">น้ำหนักเสาหลัก</h3>
+                  <span className="text-xs text-slate-400 tabular-nums">รวม {sum.toFixed(2)}</span>
+                </div>
+                <p className="text-xs text-slate-400 mb-3">ความสำคัญของแต่ละมิติความเสี่ยงต่อคะแนนรวม</p>
+                <div className="space-y-4">
+                  <WeightSlider pillar="A" value={weights.wA} onChange={v => setWeight("wA", v)} />
+                  <WeightSlider pillar="B" value={weights.wB} onChange={v => setWeight("wB", v)} />
+                  <WeightSlider pillar="C" value={weights.wC} onChange={v => setWeight("wC", v)} />
+                </div>
+                <p className="mt-3 text-xs text-slate-400">ค่าเริ่มต้น 0.40 / 0.35 / 0.25 — ปรับค่าหนึ่ง ระบบจะกระจายส่วนที่เหลือให้รวมเป็น 1.00</p>
+              </section>
+              <section className="rounded-md border border-slate-200">
+                <button onClick={() => setAdvancedOpen(o => !o)}
+                  className="w-full flex items-center justify-between px-3 py-2.5 text-left">
+                  <div>
+                    <div className="text-sm font-bold text-slate-800">น้ำหนักปัจจัยในแต่ละเสา</div>
+                    <div className="text-xs text-slate-400">Factor weights within A · B · C (advanced)</div>
+                  </div>
+                  <svg viewBox="0 0 24 24" className={`h-4 w-4 text-slate-400 transition-transform ${advancedOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                {advancedOpen && (
+                  <div className="px-3 pb-3 space-y-3">
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      ปรับน้ำหนักของปัจจัยภายในเสา — เมื่อปรับปัจจัยหนึ่ง ระบบจะกระจายส่วนที่เหลือในเสาเดียวกันให้รวมเป็น 1.00 โดยอัตโนมัติ
+                    </p>
+                    <FactorWeightGroup pillar="A" signalWeights={signalWeights} setSignalWeight={setSignalWeight} />
+                    <FactorWeightGroup pillar="B" signalWeights={signalWeights} setSignalWeight={setSignalWeight} />
+                    <FactorWeightGroup pillar="C" signalWeights={signalWeights} setSignalWeight={setSignalWeight} />
+                  </div>
+                )}
+              </section>
+              <section>
+                <h3 className="text-sm font-bold text-slate-800 mb-1">เกณฑ์เสนอตรวจสอบ <span className="font-normal text-slate-400">(Escalation threshold)</span></h3>
+                <p className="text-xs text-slate-400 mb-3">เคสที่คะแนนถึงเกณฑ์นี้จะถูกเสนอให้ตรวจสอบยืนยัน</p>
+                <div className="flex items-baseline justify-between mb-1">
+                  <label className="text-sm font-semibold text-slate-700">คะแนนตั้งแต่</label>
+                  <span className="tabular-nums text-sm font-bold text-slate-900">{threshold}</span>
+                </div>
+                <input type="range" min="0" max="100" step="1" value={threshold}
+                  onChange={e => setThreshold(parseInt(e.target.value, 10))}
+                  className="w-full accent-gov cursor-pointer" />
+                <p className="mt-2 text-xs text-slate-400">ค่าเริ่มต้น 60</p>
+              </section>
+              <button onClick={resetAll} className="w-full rounded-md border border-slate-300 bg-white py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                คืนค่าเริ่มต้น (Reset defaults)
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* --- Root App --- */
+    function App() {
+      const base = useMemo(() => generateData(), []);
+      const [weights, setWeights] = useState({ wA: DEFAULTS.wA, wB: DEFAULTS.wB, wC: DEFAULTS.wC });
+      const [threshold, setThreshold] = useState(DEFAULTS.threshold);
+      const [selectedId, setSelectedId] = useState(null);
+      const [extra, setExtra] = useState({ officials: [], rawMatrix: {} });
+      const [formOpen, setFormOpen] = useState(false);
+      const [settingsOpen, setSettingsOpen] = useState(false);
+      const [signalWeights, setSignalWeights] = useState(DEFAULT_SIGNAL_WEIGHTS);
+
+      const setSignalWeight = useCallback((key, value) => {
+        setSignalWeights(prev => {
+          const pillar = SIGNAL_DEFS.find(s => s.key === key).pillar;
+          const siblings = SIGNAL_DEFS.filter(s => s.pillar === pillar && s.key !== key).map(s => s.key);
+          const remain = 1 - value;
+          const sSum = siblings.reduce((a, k) => a + prev[k], 0);
+          const next = { ...prev, [key]: value };
+          if (sSum <= 1e-6) siblings.forEach(k => { next[k] = remain / siblings.length; });
+          else siblings.forEach(k => { next[k] = remain * (prev[k] / sSum); });
+          return next;
+        });
+      }, []);
+
+      const scorePreview = useCallback((official, rawRow) => {
+        const officials = base.officials.concat([official]);
+        const rawMatrix = { ...base.rawMatrix, [official.id]: rawRow };
+        const norm = normalizeMatrix(officials, rawMatrix);
+        return scoreOfficial(official, norm[official.id], rawMatrix[official.id], weights, signalWeights);
+      }, [base, weights, signalWeights]);
+
+      const data = useMemo(() => {
+        const officials = base.officials.concat(extra.officials);
+        const rawMatrix = { ...base.rawMatrix, ...extra.rawMatrix };
+        return { officials, rawMatrix, normMatrix: normalizeMatrix(officials, rawMatrix) };
+      }, [base, extra]);
+
+      const addCase = useCallback((official, rawRow) => {
+        setExtra(prev => ({ officials: [...prev.officials, official], rawMatrix: { ...prev.rawMatrix, [official.id]: rawRow } }));
+        setFormOpen(false);
+        setSelectedId(official.id);
+      }, []);
+
+      const clearExtras = useCallback(() => { setExtra({ officials: [], rawMatrix: {} }); setSelectedId(null); }, []);
+
+      const setWeight = useCallback((key, value) => {
+        setWeights(prev => {
+          const others = ["wA", "wB", "wC"].filter(k => k !== key);
+          const remain = 1 - value;
+          const oSum = others.reduce((a, k) => a + prev[k], 0);
+          const next = { ...prev, [key]: value };
+          if (oSum <= 1e-6) others.forEach(k => { next[k] = remain / 2; });
+          else others.forEach(k => { next[k] = remain * (prev[k] / oSum); });
+          return next;
+        });
+      }, []);
+
+      const resetAll = useCallback(() => {
+        setWeights({ wA: DEFAULTS.wA, wB: DEFAULTS.wB, wC: DEFAULTS.wC });
+        setThreshold(DEFAULTS.threshold);
+        setSignalWeights(DEFAULT_SIGNAL_WEIGHTS);
+      }, []);
+
+      const results = useMemo(
+        () => computeQueue(data.officials, data.rawMatrix, data.normMatrix, weights, threshold, signalWeights),
+        [data, weights, threshold, signalWeights]
+      );
+      const escalateCount = results.filter(r => r.escalate).length;
+      const tierCounts = results.reduce((a, r) => (a[r.tier]++, a), { RED: 0, AMBER: 0, GREEN: 0 });
+      const selected = results.find(r => r.official.id === selectedId) || null;
+
+      return (
+        <div className="min-h-screen bg-slate-50 text-slate-900">
+          <Banner />
+          <Header onOpenSettings={() => setSettingsOpen(true)} />
+
+          <div className="border-b border-slate-200 bg-white">
+            <div className="mx-auto max-w-[1500px] px-5 py-2.5 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+              <span className="text-slate-500">สรุประดับความเสี่ยง ({data.officials.length} ราย):</span>
+              {[["RED", tierCounts.RED], ["AMBER", tierCounts.AMBER], ["GREEN", tierCounts.GREEN]].map(([tier, n]) => (
+                <span key={tier} className="inline-flex items-center gap-1.5">
+                  <span className={`inline-block h-2.5 w-2.5 rounded-full ${TIER[tier].dot}`}></span>
+                  <span className={`font-bold tabular-nums ${TIER[tier].text}`}>{n}</span>
+                  <span className="text-slate-500">{TIER[tier].th}</span>
+                </span>
+              ))}
+              <span className="ml-auto text-slate-400 text-xs">เกณฑ์ระดับ: แดง ≥ 70 · เหลือง 40–69 · เขียว &lt; 40</span>
+            </div>
+          </div>
+
+          <main className="mx-auto max-w-[1500px] px-5 py-5">
+            <SopToolbar
+              escalateCount={escalateCount} total={data.officials.length} threshold={threshold}
+              onAddCase={() => setFormOpen(true)}
+              extraCount={extra.officials.length}
+              onClearExtras={clearExtras}
+            />
+            <QueueTable results={results} selectedId={selectedId} onSelect={setSelectedId} threshold={threshold} />
+          </main>
+
+          <footer className="mx-auto max-w-[1500px] px-5 pb-8 pt-2 text-xs text-slate-400 leading-relaxed">
+            ABC Score · แบบจำลองตัวชี้วัดถ่วงน้ำหนักแบบโปร่งใส — ไม่ใช่การเรียนรู้ของเครื่อง · ทุกผลลัพธ์เป็นข้อเสนอต่อมนุษย์ผู้ตัดสิน
+            <br/>ข้อมูลจำลองทั้งหมด ไม่เกี่ยวข้องกับบุคคลหรือหน่วยงานจริง · ไม่มีฐานข้อมูล ไม่มีการเชื่อมต่อเครือข่าย ไม่มีการจัดเก็บข้อมูล
+          </footer>
+
+          {selected && <DrillDown result={selected} weights={weights} threshold={threshold} onClose={() => setSelectedId(null)} />}
+          {formOpen && <AddCaseForm nextIndex={extra.officials.length + 1} onAdd={addCase} onClose={() => setFormOpen(false)} scorePreview={scorePreview} />}
+          <SettingsDrawer open={settingsOpen} weights={weights} setWeight={setWeight}
+            threshold={threshold} setThreshold={setThreshold} resetAll={resetAll}
+            signalWeights={signalWeights} setSignalWeight={setSignalWeight}
+            onClose={() => setSettingsOpen(false)} />
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
